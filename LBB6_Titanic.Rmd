@@ -1,0 +1,470 @@
+---
+title: "LBB6"
+author: "Reynard Verill"
+date: "`r format(Sys.Date(), '%B %e, %Y')`"
+output: 
+  html_document:
+    df_print: paged
+    highlight: tango
+    theme: cosmo
+    toc: yes
+    toc_float:
+      collapsed: no
+    css: assets/style.css
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align = "center", out.width = "80%")
+options(scipen = 99)
+```
+
+
+<style>
+body {
+text-align: justify}
+</style>
+
+# Objectives
+This report is going to predict whether a passenger will survive the disastrous and infamous crash of the prominent titanic ship based on multiple predictor variables such as gender, age, ticket fare, etc.
+
+# Library and Setup
+
+Importing the necessary packages for the processing of the titanic data frame.
+
+```{r cars}
+library(caret) # For data pre-processing
+library(dplyr)
+library(tidymodels)
+library(ggplot2) # To visualize data
+library(class)
+library(tidyr)
+library(GGally)
+library(inspectdf)
+library(gridExtra)
+library(e1071) #for naiveBayes
+
+theme_set(theme_minimal() +
+            theme(legend.position = "top"))
+
+options(scipen = 999)
+
+```
+
+# Read data
+
+The titanic data set was obtained from Kaggle and comprises of variables as illustrated in the following table along with their respective data types :
+```{r}
+titanic_train <- read.csv("data_input/train.csv")
+titanic_test <- read.csv("data_input/test.csv")
+answer <- read.csv("data_input/gender_submission.csv")
+glimpse(titanic_train)
+```
+
+A full set of titanic train data frame:
+```{r}
+titanic_train
+```
+Columns descriptions:
+Survived : Indicates the survival of the passenger (1 for yes, and 0 for no).
+Pclass : Ticket class (1 = 1st, 2 = 2nd, 3 = 3rd)
+Sex : Sex of the passenger.
+Age : Age in years.
+sibsp :	# of siblings / spouses aboard the Titanic	
+Parch	: # of parents / children aboard the Titanic	
+Ticket :	Ticket number	
+Fare :	Passenger fare	
+Cabin	: Cabin number	
+Embarked :	Port of Embarkation (C = Cherbourg, Q = Queenstown, S = Southampton)
+
+```{r}
+answer
+```
+
+# Data Wrangling
+
+In this section, the titanic data frames are going to be analyzed first before further processing, and ultimately modeling.
+
+## Remove unused columns
+
+
+```{r}
+titanic_train <- titanic_train %>% select(-c("PassengerId", "Name", "Ticket", "Cabin"))
+titanic_test <- titanic_test %>% select(-c("PassengerId", "Name", "Ticket", "Cabin"))
+
+titanic_train %>% glimpse
+```
+
+```{r}
+titanic_test %>% glimpse
+```
+
+Mutate the variables that are more appropriate as factor data type. In this case, Parch and SibSp are mutated as they are not distributed continuously, but rather discretely (as the total amount of persons count can only be integer).
+
+```{r}
+titanic_train <- titanic_train %>% mutate_at(c("Sex", "Survived", "Embarked", "Pclass"), as.factor)
+titanic_test <- titanic_test %>% mutate_at(c("Sex", "Embarked", "Pclass"), as.factor)
+answer <- answer %>% mutate_at(c("Survived"), as.factor)
+```
+
+```{r}
+titanic_train %>% glimpse()
+```
+
+```{r}
+titanic_test %>% glimpse()
+```
+
+
+## Checking null values in the variables
+
+The function of colSums(is.na(data)) is used to determine which variables are not complete in the data set, and might require imputation or eradication towards the missing value rows.
+
+```{r}
+colSums(is.na(titanic_train))
+```
+
+```{r}
+colSums(is.na(titanic_test))
+```
+
+As can be seen from the analysis above towards the two data frames, namely titanic_train and titanic_test, it can be inferred that both the variables has a relatively high amount of missing values, and it might be wiser to omit or impute those missing values to prevent bias estimation, depending on the results of the distribution of the numerical columns in the subsequent section.
+
+```{r}
+inspection <- inspect_num(titanic_train %>% select(is.numeric) %>% select(-c(!is.numeric)))
+show_plot(inspection)
+```
+
+As can be seen from the charts above, the data are not perfectly normally distributed, and hence, imputation with median value might be a more reasonable decision to complete the data set.
+
+## Replace missing values
+
+The following section is going to fill the missing values in both data sets using the median value of each respective column.
+```{r}
+#Replace the missing values in both data set using the median data
+prevaluesTrain <- preProcess(titanic_train, method = c("medianImpute"))
+prevaluesTest <- preProcess(titanic_test, method = c("medianImpute"))
+titanic_train <- predict(prevaluesTrain, titanic_train)
+titanic_test <- predict(prevaluesTest, titanic_test)
+```
+
+```{r}
+colSums(is.na(titanic_train))
+```
+
+```{r}
+colSums(is.na(titanic_test))
+```
+
+# Exploratory Data Analysis
+
+Check the target variable proportion in our train data set to avoid bias in predicting the model.
+
+```{r}
+(table(titanic_train$Survived))
+```
+```{r}
+prop.table(table(titanic_train$Survived))
+```
+
+As the survived variable is more skewed towards 0, which indicates a passenger's inability to survive, a up-sampling is needed to even the outcome and prevent significant bias in our model. In this case, up-sampling is more suitable as the data size is not relatively big enough.
+
+```{r}
+titanic_train <- titanic_train %>% upSample(titanic_train$Survived)
+table(titanic_train$Survived)
+```
+
+As based on the previous examination, it can be deduced that some of the variables are suited more properly as factor, the data set is left with just 4 numerical predictor variables, namely Fare, Parch, SibSp and Age. This next section is going to view the strength of the correlation between those two.
+
+```{r}
+ggcorr(titanic_train %>% select(-Survived), label = T)
+```
+As they are mainly mildly correlated, a model such as naive Bayes which depend immensely on the assumption of independent predictor variables might also be relevant in this prediction model.
+
+# Modeling : Naive Bayes
+
+Referencing another report written by Ms. Nabiilah of Algoritma Academy team which was published on RPubs(https://rpubs.com/nabiilahardini/wine-ndf), a naive Bayes model should satisfy the following characteristics :
+  - assumes that all features of the dataset are equally important and independent. This allows Naive Bayes to perform faster computation (the algorithms is quite simple).
+  - prone to bias due to data scarcity. In some cases, our data may have a distribution where scarce observations lead to probabilities approximating close to 0 or 1, which introduces a heavy bias into our model that could lead to poor performance on unseen data.
+  - more appropriate for data with categoric predictors. This is because Naive Bayes is sensitive to data scarcity. Meanwhile, a continuous variable might contain really scarce or even only one observation for certain value.
+  - apply Laplace estimator/smoothing for data scarcity problem. Laplace estimator proposes the adding of a small number (usually 1) to each of the counts in the frequency table. This subsequently ensures that each class-feature combination has a non-zero probability of occurring.
+  
+Considering the above mentioned characteristic of a suitable data set to be predicted using naive Bayes model, this titanic data is seemingly ideal to be predicted using this model, as it consists of lots of categorical columns.
+
+```{r}
+train_x <- titanic_train %>% select(-Survived)
+train_y <- titanic_train$Survived
+```
+
+```{r}
+naive_model <- naiveBayes(x = train_x, y = train_y, laplace = 1)
+
+#model fitting using class prediction
+naive_pred <- predict(naive_model, titanic_test, type="class")
+
+#model fitting using prob prediction
+naive_prob <- predict(naive_model, titanic_test, type="raw")
+
+#result
+naive_table <- select(answer, Survived) %>%
+  bind_cols(survive_pred = naive_pred) %>% 
+  bind_cols(survive_eprob = round(naive_prob[,1],4)) %>% 
+  bind_cols(survive_pprob = round(naive_prob[,2],4))
+```
+
+```{r}
+#performance evaluation using confusionMatrix
+confusionMatrix(naive_pred, answer$Survived, positive = '1')
+```
+
+
+```{r}
+naive_table
+```
+
+
+```{r}
+#confusion matrix table
+naive_table %>% 
+  conf_mat(Survived, survive_pred) %>% 
+  autoplot(type = "heatmap")
+
+```
+It can be seen that the model prediction has been able to predict the data set with reasonably high accuracy, as reflected on the recall. In this case, the correct prediction (passenger being alive) is set as the true positive as it might be better to falsely predict someone as alive compared to otherwise as it might lead to unwanted consequences (such as not searching for the person who is thought as dead). However, it is completely relative to the perspective of the person in generating this model and their objectives. The confusion matrix in the proceeding models will also have the same evaluation.
+
+
+```{r}
+naive_roc <- data.frame(prediction=round(naive_table$survive_pprob,4),
+                      trueclass=as.numeric(naive_table$Survived=='1'))
+(naive_roc)
+```
+```{r}
+library(ROCR)
+naive_roc <- ROCR::prediction(naive_roc$prediction, naive_roc$trueclass) 
+
+# ROC curve
+plot(performance(naive_roc, "tpr", "fpr"),
+     main = "ROC") +
+     abline(a = 0, b = 1)
+```
+```{r}
+# AUC
+auc_ROCR_n <- performance(naive_roc, measure = "auc")
+auc_ROCR_n <- auc_ROCR_n@y.values[[1]]
+auc_ROCR_n
+```
+
+```{r}
+# Metrics result
+final_n <- naive_table %>%
+  summarise(
+    accuracy = accuracy_vec(Survived, survive_pred),
+    sensitivity = sens_vec(Survived, survive_pred),
+    specificity = spec_vec(Survived, survive_pred),
+    precision = precision_vec(Survived, survive_pred)
+  ) %>% 
+  cbind(AUC = auc_ROCR_n)
+final_n
+```
+
+# Modeling : Decision Tree
+
+This model might be chosen more often than not due to its easier interpretation to the human eyes, as it resembles an actual tree.
+
+## Preprocessing the train and test data
+
+Remove the class column which is not used for our model.
+```{r}
+titanic_train <- titanic_train %>% select(-Class)
+titanic_train
+```
+
+Add the survived column into train data set
+```{r}
+ttree_test <- titanic_test %>% mutate(Survived = answer$Survived)
+ttree_test
+```
+## Make a decision tree model
+```{r}
+library(partykit)
+
+ttree_model <- ctree(formula = Survived ~.,
+                     data = titanic_train,
+                     control = ctree_control(mincriterion=0.005,
+                                             minsplit=0,
+                                             minbucket=0))
+
+plot(ttree_model, type = "simple")
+```
+## Prediction and Confusion Matrix
+```{r}
+
+dtree_pred <- predict(ttree_model, ttree_test, type = "response")
+
+dtree_prob <- predict(ttree_model, ttree_test, type = "prob")
+
+dtree_table <- select(answer, Survived) %>%
+  bind_cols(survive_pred = dtree_pred) %>% 
+  bind_cols(survive_eprob = round(dtree_prob[,1],4)) %>% 
+  bind_cols(survive_pprob = round(dtree_prob[,2],4))
+```
+
+```{r}
+confusionMatrix(data = dtree_pred,
+                reference = answer$Survived,
+                positive = '1')
+```
+
+```{r}
+#confusion matrix table
+dtree_table %>% 
+  conf_mat(Survived, survive_pred) %>% 
+  autoplot(type = "heatmap")
+
+```
+
+## ROC
+```{r}
+dtree_roc <- data.frame(prediction=round(dtree_table$survive_pprob,4),
+                      trueclass=as.numeric(dtree_table$Survived=='1'))
+(dtree_roc)
+```
+
+
+```{r}
+dtree_roc <- ROCR::prediction(dtree_roc$prediction, dtree_roc$trueclass) 
+
+# ROC curve
+plot(performance(dtree_roc, "tpr", "fpr"),
+     main = "ROC") +
+     abline(a = 0, b = 1)
+```
+
+## AUC
+```{r}
+# AUC
+auc_ROCR_d <- performance(dtree_roc, measure = "auc")
+auc_ROCR_d <- auc_ROCR_d@y.values[[1]]
+auc_ROCR_d
+```
+
+##Metrics Result
+```{r}
+# Metrics result
+final_d <- dtree_table %>%
+  summarise(
+    accuracy = accuracy_vec(Survived, survive_pred),
+    sensitivity = sens_vec(Survived, survive_pred),
+    specificity = spec_vec(Survived, survive_pred),
+    precision = precision_vec(Survived, survive_pred)
+  ) %>% 
+  cbind(AUC = auc_ROCR_d)
+final_d
+```
+
+# Modeling : Random Forest
+
+Further referencing Ms. Nabiilah's report, "Random Forest is one example of an ensemble-based algorithm which was built based on a decision tree method and known for its versatility and performance. Ensemble-based algorithm itself is actually a hybrid of several machine learning techniques combined into one predictive model, built to reduce error, bias, and improve predictions. The building of a Random Forest model consist of several steps:
+
+it performs bagging (bootstrap aggregation) Creating subsets of training data through random sampling with replacement to train multiple predictive models (in this case many decision trees).
+
+it performs boosting Train multiple predictive models to generate a better one. This overcomes the problem of overfitting in decision tree because we will consider more than 1 decision tree which was previously trained using random variables and observations.
+
+classify class based on voting mechanism after multiple decision trees have been trained and each tree gave prediction (fitted values). The final prediction was generated through majority voting (in classification) or average output (if regression).
+
+Speaking about random selection of observation and variables, let’s get acquainted with a technique for model evaluation called K-fold Cross-Validation. This technique performs cross-validation by splitting our data into k equal-sized sample group (bins) and use one of the bins to become the test data while the rest of the data become the train data. This process is repeated for k-times (the folds). This makes every observation has the chance to be used as both training and test data and therefore may also overcome overfitting problem from the decision tree. Below is an example of a 5-bins and 5-fold cross validation."
+
+## Make a random forest model
+```{r}
+# model building
+set.seed(100)
+ctrl <- trainControl(method="repeatedcv", number=8, repeats=8) # k-fold cross validation
+tforest <- train(Survived ~ ., data=titanic_train, method="rf", trControl = ctrl)
+tforest
+```
+## Inspect the importance of each variable
+```{r}
+varImp(tforest)
+```
+
+## final model of forest
+```{r}
+plot(tforest$finalModel)
+```
+```{r}
+tforest$finalModel
+```
+
+## Predict the model
+```{r}
+tforest_pred <- predict(tforest, titanic_test, type="raw")
+
+tforest_prob <- predict(tforest, titanic_test, type="prob")
+
+forest_table <- select(answer, Survived) %>%
+  bind_cols(survive_pred = tforest_pred) %>% 
+  bind_cols(survive_eprob = round(tforest_prob[,1],4)) %>% 
+  bind_cols(survive_pprob = round(tforest_prob[,2],4))
+```
+
+## Confusion Matrix
+```{r}
+confusionMatrix(tforest_pred, answer$Survived, positive = '1')
+
+```
+
+```{r}
+#confusion matrix table
+forest_table %>% 
+  conf_mat(Survived, survive_pred) %>% 
+  autoplot(type = "heatmap")
+
+```
+
+## ROC
+
+```{r}
+forest_roc <- data.frame(prediction=round(forest_table$survive_pprob,4),
+                      trueclass=as.numeric(forest_table$Survived=='1'))
+(forest_roc)
+```
+
+```{r}
+forest_roc <- ROCR::prediction(forest_roc$prediction, forest_roc$trueclass) 
+
+# ROC curve
+plot(performance(forest_roc, "tpr", "fpr"),
+     main = "ROC") +
+     abline(a = 0, b = 1)
+```
+## AUC
+
+```{r}
+# AUC
+auc_ROCR_f <- performance(forest_roc, measure = "auc")
+auc_ROCR_f <- auc_ROCR_f@y.values[[1]]
+auc_ROCR_f
+```
+
+## Metrics Result
+
+```{r}
+# Metrics result
+final_f <- forest_table %>%
+  summarise(
+    accuracy = accuracy_vec(Survived, survive_pred),
+    sensitivity = sens_vec(Survived, survive_pred),
+    specificity = spec_vec(Survived, survive_pred),
+    precision = precision_vec(Survived, survive_pred)
+  ) %>% 
+  cbind(AUC = auc_ROCR_f)
+final_f
+```
+
+# Conclusion
+
+```{r}
+rbind("Naive Bayes" = final_n, "Decision Tree" = final_d, "Random Forest" = final_f)
+```
+Based on the above table, it can be inferred that the Naive Bayes model is the most accurate for this data set. One of the few feasible explanation regarding this unusual phenomenon is that the predictor variables pretty much satisfy naive Bayes assumption in making the model (independent predictor variables). Apart from that, its performance in terms of recall and specificity also tops the others, with Random forest model trailing at second.
+
+
